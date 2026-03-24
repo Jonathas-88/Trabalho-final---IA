@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.env.local
+.env.*.local
+**/node_modules/
+
+# Frontend (React Router / Vite)
+my-react-router-app/.react-router/
+my-react-router-app/build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
