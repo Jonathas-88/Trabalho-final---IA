@@ -11,9 +11,9 @@ export const DAYS = [
 export type DayId = (typeof DAYS)[number]["id"];
 
 export const SHIFTS = [
-  { id: "manha", label: "Manhã (8h–12h)" },
-  { id: "tarde", label: "Tarde (13h–17h)" },
-  { id: "noite", label: "Noite (18h–22h)" },
+  { id: "manha", label: "Culto manhã (10h-11:30h)" },
+  { id: "tarde", label: "Culto tarde (17h-18:30h)" },
+  { id: "noite", label: "Culto noite (19h-20:30h)" },
 ] as const;
 
 export type ShiftId = (typeof SHIFTS)[number]["id"];

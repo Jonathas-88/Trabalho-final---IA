@@ -206,7 +206,7 @@ export function VolunteerScheduler() {
 
             <fieldset>
               <legend className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Dias em que você pode comparecer
+                Dias disponíveis
               </legend>
               <div className="mt-3 flex flex-wrap gap-2">
                 {DAYS.map((d) => {
@@ -234,7 +234,7 @@ export function VolunteerScheduler() {
 
             <fieldset>
               <legend className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Turnos disponíveis para você
+                Turnos disponíveis
               </legend>
               <div className="mt-3 flex flex-wrap gap-2">
                 {SHIFTS.map((s) => {
@@ -262,7 +262,7 @@ export function VolunteerScheduler() {
 
             <fieldset>
               <legend className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Funções que você aceita exercer
+                Função
               </legend>
               <div className="mt-3 flex flex-wrap gap-2">
                 {ROLES.map((r) => {
