@@ -14,6 +14,7 @@ import {
   labelForShift,
   labelForRole,
   type ExtraRoleId,
+  EXTRA_ROLES,
 } from "../lib/volunteer-scheduling";
 
 type AiPanel = { text: string | null; error: string | null; loading: boolean };
@@ -297,14 +298,14 @@ export function VolunteerScheduler() {
                 Salas
               </legend>
               <div className="mt-3 flex flex-wrap gap-2">
-                {ROLES.map((r) => {
-                  const active = roles.has(r.id);
+                {EXTRA_ROLES.map((r) => {
+                  const active = extraRoles.has(r.id);
                   return (
                     <button
                       key={r.id}
                       type="button"
                       onClick={() => {
-                        setRoles((prev) => toggle(prev, r.id));
+                        setExtraRoles((prev) => toggle(prev, r.id));
                         setSubmitted(false);
                       }}
                       className={`rounded-full px-4 py-2 text-sm font-medium transition ${
