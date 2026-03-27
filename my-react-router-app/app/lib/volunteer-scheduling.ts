@@ -12,18 +12,16 @@ export type DayId = (typeof DAYS)[number]["id"];
 
 export const SHIFTS = [
   { id: "manha", label: "Culto manhã (10h-11:30h)" },
-  { id: "tarde", label: "Culto tarde (17h-18:30h)" },
-  { id: "noite", label: "Culto noite (19h-20:30h)" },
+  { id: "tarde", label: "Culto tarde (13h-17h)" },
+  { id: "noite", label: "Culto noite (18h-22h)" },
 ] as const;
 
 export type ShiftId = (typeof SHIFTS)[number]["id"];
 
 export const ROLES = [
-  { id: "recepcao", label: "Recepção" },
-  { id: "apoio", label: "Apoio geral" },
-  { id: "som", label: "Som / multimídia" },
-  { id: "cafeteria", label: "Cafeteria" },
-  { id: "infantil", label: "Ministério infantil" },
+  { id: "facilitador", label: "Facilitador" },
+  { id: "titular", label: "Titular" },
+  { id: "auxiliar", label: "Auxiliar" },
 ] as const;
 
 export type RoleId = (typeof ROLES)[number]["id"];
@@ -33,30 +31,63 @@ export interface ScheduleSlot {
   day: DayId;
   shift: ShiftId;
   role: RoleId;
+  extraRole: ExtraRoleId;
   spotsLeft: number;
 }
 
+export const EXTRA_ROLES = [
+  { id: "kids", label: "Kids" },
+  { id: "super_kids", label: "Super Kids" },
+  { id: "juniores", label: "Juniores" },
+] as const;
+
+export type ExtraRoleId = (typeof EXTRA_ROLES)[number]["id"];
+
 /** Vagas exemplo — substitua por dados reais ou API depois */
 export const MOCK_SLOTS: ScheduleSlot[] = [
-  { id: "1", day: "seg", shift: "manha", role: "recepcao", spotsLeft: 2 },
-  { id: "2", day: "seg", shift: "tarde", role: "apoio", spotsLeft: 3 },
-  { id: "3", day: "ter", shift: "manha", role: "som", spotsLeft: 1 },
-  { id: "4", day: "ter", shift: "noite", role: "recepcao", spotsLeft: 2 },
-  { id: "5", day: "qua", shift: "tarde", role: "cafeteria", spotsLeft: 2 },
-  { id: "6", day: "qui", shift: "manha", role: "infantil", spotsLeft: 1 },
-  { id: "7", day: "qui", shift: "noite", role: "apoio", spotsLeft: 4 },
-  { id: "8", day: "sex", shift: "tarde", role: "recepcao", spotsLeft: 2 },
-  { id: "9", day: "sab", shift: "manha", role: "recepcao", spotsLeft: 3 },
-  { id: "10", day: "sab", shift: "tarde", role: "som", spotsLeft: 1 },
-  { id: "11", day: "dom", shift: "manha", role: "apoio", spotsLeft: 2 },
-  { id: "12", day: "dom", shift: "noite", role: "recepcao", spotsLeft: 2 },
+  {id: "1", day: "seg", shift: "manha", role: "facilitador", extraRole: "kids", spotsLeft: 2,},
+  { id: "2", day: "seg", shift: "tarde", role: "titular", extraRole: "super_kids", spotsLeft: 3 },
+  { id: "3", day: "ter", shift: "manha", role: "auxiliar", extraRole: "juniores", spotsLeft: 1 },
+  { id: "4", day: "ter", shift: "noite", role: "facilitador", extraRole: "kids", spotsLeft: 2 },
+  { id: "5", day: "qua", shift: "tarde", role: "titular", extraRole: "super_kids", spotsLeft: 2 },
+  { id: "6", day: "qui", shift: "manha", role: "auxiliar", extraRole: "juniores", spotsLeft: 1 },
+  { id: "7", day: "qui", shift: "noite", role: "facilitador", extraRole: "kids", spotsLeft: 4 },
+  { id: "8", day: "sex", shift: "tarde", role: "titular", extraRole: "super_kids", spotsLeft: 2 },
+  { id: "9", day: "sab", shift: "manha", role: "auxiliar", extraRole: "juniores", spotsLeft: 3 },
+  { id: "10", day: "sab", shift: "tarde", role: "facilitador", extraRole: "kids", spotsLeft: 1 },
+  { id: "11", day: "dom", shift: "manha", role: "titular", extraRole: "super_kids", spotsLeft: 2 },
+  { id: "12", day: "dom", shift: "noite", role: "auxiliar", extraRole: "juniores", spotsLeft: 2 },
 ];
+
+
+
+const resultado = matchExtraSlots({
+  name: "Jonathas",
+  days: ["seg", "ter", "qua", "qui", "sex", "sab", "dom"],
+  shifts: ["manha", "tarde", "noite"],
+  roles: ["facilitador", "titular", "auxiliar"],
+  extraRoles: ["kids", "super_kids", "juniores"],
+});
+
+export function matchExtraSlots(
+  constraints: VolunteerConstraints
+): ScheduleSlot[] {
+  return MOCK_SLOTS.filter(
+    (s) =>
+      constraints.days.includes(s.day) &&
+      constraints.shifts.includes(s.shift) &&
+      constraints.roles.includes(s.role) &&
+      constraints.extraRoles.includes(s.extraRole) && // 👈 FILTRO NOVO
+      s.spotsLeft > 0
+  );
+}
 
 export interface VolunteerConstraints {
   name: string;
   days: DayId[];
   shifts: ShiftId[];
   roles: RoleId[];
+  extraRoles: ExtraRoleId[];
 }
 
 export function labelForDay(id: DayId): string {
@@ -117,3 +148,4 @@ export function groupByDay(slots: ScheduleSlot[]): Map<DayId, ScheduleSlot[]> {
   }
   return map;
 }
+

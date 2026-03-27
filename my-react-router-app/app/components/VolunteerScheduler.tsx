@@ -13,6 +13,7 @@ import {
   labelForDay,
   labelForShift,
   labelForRole,
+  type ExtraRoleId,
 } from "../lib/volunteer-scheduling";
 
 type AiPanel = { text: string | null; error: string | null; loading: boolean };
@@ -71,20 +72,23 @@ export function VolunteerScheduler() {
   const [days, setDays] = useState<Set<DayId>>(new Set());
   const [shifts, setShifts] = useState<Set<ShiftId>>(new Set());
   const [roles, setRoles] = useState<Set<RoleId>>(new Set());
+  const [extraRoles, setExtraRoles] = useState<Set<ExtraRoleId>>(new Set());
   const [submitted, setSubmitted] = useState(false);
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
   const [aiSummary, setAiSummary] = useState<AiPanel>(idleAi);
   const [aiNoMatch, setAiNoMatch] = useState<AiPanel>(idleAi);
   const [aiConfirm, setAiConfirm] = useState<AiPanel>(idleAi);
 
+  
   const constraints: VolunteerConstraints = useMemo(
     () => ({
       name: name.trim(),
       days: [...days],
       shifts: [...shifts],
       roles: [...roles],
+      extraRoles: [...extraRoles],
     }),
-    [name, days, shifts, roles]
+    [name, days, shifts, roles, extraRoles]
   );
 
   const matched = useMemo(
@@ -194,7 +198,7 @@ export function VolunteerScheduler() {
                 id="volunteer-name"
                 type="text"
                 autoComplete="name"
-                placeholder="Ex.: Maria Silva"
+                placeholder="digite o nome do voluntário"
                 value={name}
                 onChange={(e) => {
                   setName(e.target.value);
@@ -206,7 +210,7 @@ export function VolunteerScheduler() {
 
             <fieldset>
               <legend className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Dias disponíveis
+                Dias 
               </legend>
               <div className="mt-3 flex flex-wrap gap-2">
                 {DAYS.map((d) => {
@@ -234,7 +238,7 @@ export function VolunteerScheduler() {
 
             <fieldset>
               <legend className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Turnos disponíveis
+                Turnos 
               </legend>
               <div className="mt-3 flex flex-wrap gap-2">
                 {SHIFTS.map((s) => {
@@ -262,7 +266,35 @@ export function VolunteerScheduler() {
 
             <fieldset>
               <legend className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Função
+                Funções 
+              </legend>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {ROLES.map((r) => {
+                  const active = roles.has(r.id);
+                  return (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => {
+                        setRoles((prev) => toggle(prev, r.id));
+                        setSubmitted(false);
+                      }}
+                      className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+                        active
+                          ? "bg-emerald-600 text-white shadow-sm dark:bg-emerald-500"
+                          : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+                      }`}
+                    >
+                      {r.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </fieldset>
+            
+            <fieldset>
+              <legend className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                Salas
               </legend>
               <div className="mt-3 flex flex-wrap gap-2">
                 {ROLES.map((r) => {
