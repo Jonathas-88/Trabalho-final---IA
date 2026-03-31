@@ -1162,8 +1162,8 @@ export function VolunteerScheduler() {
                     Verde
                   </span>
                   <span className="text-xs leading-snug text-gray-600 dark:text-gray-300">
-                    Nome preenchido: moldura verde + campo com borda neon na
-                    tabela.
+                    Vaga preenchido
+        
                   </span>
                 </div>
                 <div className="flex items-start gap-3 rounded-xl border border-amber-400/45 bg-white/90 px-5 py-2.5 shadow-sm dark:border-amber-500/35 dark:bg-gray-900/60">
@@ -1171,8 +1171,8 @@ export function VolunteerScheduler() {
                     Âmbar
                   </span>
                   <span className="text-xs leading-snug text-gray-600 dark:text-gray-300">
-                    Nome repetido: moldura e campo em âmbar — confira se foi
-                    intencional.
+                    Nome repetido: Confira se foi
+                    intencional. 
                   </span>
                 </div>
               </div>
@@ -1213,7 +1213,7 @@ export function VolunteerScheduler() {
                 ))}
               </select>
             </div>
-            <div className="flex flex-1 flex-col gap-1">
+            <div className="flex flex-1 flex-col gap-2">
               <label
                 htmlFor="schedule-year"
                 className="text-xs font-medium text-gray-600 dark:text-gray-400"
