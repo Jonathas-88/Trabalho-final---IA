@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   DAYS,
   SHIFTS,
@@ -43,6 +43,9 @@ import {
 type AiPanel = { text: string | null; error: string | null; loading: boolean };
 
 const idleAi: AiPanel = { text: null, error: null, loading: false };
+
+/** Último aviso de encaixe (mesmo após F5), por período — sessionStorage. */
+const PLACEMENT_SESSION_KEY = "volunteer-scheduler-last-placement";
 
 type RoomRow =
   | { key: "facilitador"; label: string; type: "facilitador" }
@@ -319,8 +322,10 @@ async function postGemini(
   }
 }
 
+const DEFAULT_SCHEDULE_YEAR = 2026;
+const DEFAULT_SCHEDULE_MONTH = 5;
+
 export function VolunteerScheduler() {
-  const initialStore = useMemo(() => loadScheduleStore(), []);
   const [name, setName] = useState("");
   const [days, setDays] = useState<Set<DayId>>(new Set());
   const [shifts, setShifts] = useState<Set<ShiftId>>(new Set());
@@ -333,15 +338,19 @@ export function VolunteerScheduler() {
   const [aiConfirm, setAiConfirm] = useState<AiPanel>(idleAi);
   const [aiDuplicates, setAiDuplicates] = useState<AiPanel>(idleAi);
 
-  const [scheduleYear, setScheduleYear] = useState(initialStore.year);
-  const [scheduleMonth, setScheduleMonth] = useState(initialStore.month);
+  const [scheduleYear, setScheduleYear] = useState(DEFAULT_SCHEDULE_YEAR);
+  const [scheduleMonth, setScheduleMonth] = useState(DEFAULT_SCHEDULE_MONTH);
   const [allGrids, setAllGrids] = useState<
     Record<string, Record<string, string>>
-  >(() => ({ ...initialStore.grids }));
+  >({});
+  const [storageReady, setStorageReady] = useState(false);
   const [undoStack, setUndoStack] = useState<Record<string, string>[]>([]);
   const allGridsRef = useRef(allGrids);
   const importInputRef = useRef<HTMLInputElement>(null);
   const duplicateAiSigRef = useRef("");
+  const prevPeriodKeyRef = useRef<string | null>(null);
+  const encaixarStartRef = useRef(0);
+  const [encaixarBusy, setEncaixarBusy] = useState(false);
 
   const [placementSuccess, setPlacementSuccess] = useState<string | null>(null);
   const [placementVacancies, setPlacementVacancies] = useState<{
@@ -387,19 +396,67 @@ export function VolunteerScheduler() {
     [duplicateGroups]
   );
 
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") return;
+    const s = loadScheduleStore();
+    setAllGrids({ ...s.grids });
+    setScheduleYear(s.year);
+    setScheduleMonth(s.month);
+    try {
+      const raw = sessionStorage.getItem(PLACEMENT_SESSION_KEY);
+      if (raw) {
+        const j = JSON.parse(raw) as { periodKey?: string; message?: string };
+        const pk = periodKey(s.year, s.month);
+        if (j.periodKey === pk && typeof j.message === "string") {
+          setPlacementSuccess(j.message);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    setStorageReady(true);
+  }, []);
+
   useEffect(() => {
+    if (!storageReady) return;
     saveScheduleStore({
       version: 2,
       year: scheduleYear,
       month: scheduleMonth,
       grids: allGrids,
     });
-  }, [scheduleYear, scheduleMonth, allGrids]);
+  }, [storageReady, scheduleYear, scheduleMonth, allGrids]);
 
   useEffect(() => {
+    if (typeof window === "undefined" || !storageReady) return;
+    if (placementSuccess) {
+      sessionStorage.setItem(
+        PLACEMENT_SESSION_KEY,
+        JSON.stringify({
+          periodKey: periodKey(scheduleYear, scheduleMonth),
+          message: placementSuccess,
+        })
+      );
+    } else {
+      sessionStorage.removeItem(PLACEMENT_SESSION_KEY);
+    }
+  }, [storageReady, placementSuccess, scheduleYear, scheduleMonth]);
+
+  useEffect(() => {
+    if (prevPeriodKeyRef.current === null) {
+      prevPeriodKeyRef.current = periodKeyStr;
+      return;
+    }
+    if (prevPeriodKeyRef.current === periodKeyStr) return;
+    prevPeriodKeyRef.current = periodKeyStr;
     setUndoStack([]);
     duplicateAiSigRef.current = "";
     setAiDuplicates(idleAi);
+    setPlacementSuccess(null);
+    setPlacementVacancies(null);
+    if (typeof window !== "undefined") {
+      sessionStorage.removeItem(PLACEMENT_SESSION_KEY);
+    }
   }, [periodKeyStr]);
 
   useEffect(() => {
@@ -643,29 +700,44 @@ export function VolunteerScheduler() {
     });
   }
 
+  function finishEncaixarInteraction(minVisibleMs: number) {
+    const elapsed = Date.now() - encaixarStartRef.current;
+    const wait = Math.max(0, minVisibleMs - elapsed);
+    window.setTimeout(() => setEncaixarBusy(false), wait);
+  }
+
   function handleEncaixarNaTabela() {
+    if (encaixarBusy) return;
+    encaixarStartRef.current = Date.now();
+    setEncaixarBusy(true);
+
     setPlacementSuccess(null);
     setPlacementVacancies(null);
     const trimmed = name.trim();
     if (!trimmed) {
+      finishEncaixarInteraction(240);
       window.alert("Informe o nome do voluntário.");
       return;
     }
     if (!days.has("dom")) {
+      finishEncaixarInteraction(240);
       window.alert(
         'A tabela usa apenas os domingos do mês selecionado. Marque "Domingo" em Dias para encaixar automaticamente.'
       );
       return;
     }
     if (shifts.size === 0) {
+      finishEncaixarInteraction(240);
       window.alert("Selecione ao menos um turno.");
       return;
     }
     if (roles.size === 0) {
+      finishEncaixarInteraction(240);
       window.alert("Selecione ao menos uma função.");
       return;
     }
     if (needsRoomForGrid && extraRoles.size === 0) {
+      finishEncaixarInteraction(240);
       window.alert(
         "Para Titular ou Auxiliar, selecione ao menos uma sala (Kids, Super Kids ou Juniores)."
       );
@@ -689,6 +761,7 @@ export function VolunteerScheduler() {
       setPlacementSuccess(
         `${trimmed} foi encaixado(a) em: ${found.label}. A escala acumula cada nome e já foi salva neste navegador.`
       );
+      finishEncaixarInteraction(520);
       return;
     }
 
@@ -718,6 +791,7 @@ export function VolunteerScheduler() {
     );
 
     setPlacementVacancies({ title, lines });
+    finishEncaixarInteraction(520);
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -953,15 +1027,45 @@ export function VolunteerScheduler() {
               <button
                 type="button"
                 onClick={handleEncaixarNaTabela}
-                disabled={!canEncaixarNaTabela}
+                disabled={!canEncaixarNaTabela || encaixarBusy}
+                aria-busy={encaixarBusy}
                 title={
-                  !days.has("dom")
-                    ? 'Marque "Domingo" para encaixar na escala mensal'
-                    : undefined
+                  encaixarBusy
+                    ? "Processando encaixe…"
+                    : !days.has("dom")
+                      ? 'Marque "Domingo" para encaixar na escala mensal'
+                      : undefined
                 }
-                className="inline-flex items-center justify-center rounded-xl border-2 border-emerald-600/50 bg-emerald-50 px-5 py-3 text-sm font-semibold text-emerald-900 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:text-emerald-100 dark:hover:bg-emerald-950/60"
+                className="inline-flex min-w-[11.5rem] items-center justify-center gap-2 rounded-xl border-2 border-emerald-600/50 bg-emerald-50 px-5 py-3 text-sm font-semibold text-emerald-900 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:text-emerald-100 dark:hover:bg-emerald-950/60"
               >
-                Encaixar na tabela
+                {encaixarBusy ? (
+                  <>
+                    <svg
+                      className="h-4 w-4 shrink-0 animate-spin text-emerald-700 dark:text-emerald-300"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      aria-hidden={true}
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      />
+                    </svg>
+                    Encaixando…
+                  </>
+                ) : (
+                  "Encaixar na tabela"
+                )}
               </button>
               {submitted && (
                 <button
@@ -990,8 +1094,95 @@ export function VolunteerScheduler() {
         </form>
       </div>
 
+      <div className="mx-auto mt-10 max-w-6xl px-4 sm:px-6">
+        <div className="overflow-hidden rounded-2xl border border-gray-200/90 bg-white/90 shadow-md shadow-gray-200/30 ring-1 ring-black/[0.03] backdrop-blur-sm dark:border-gray-700/90 dark:bg-gray-900/75 dark:shadow-black/25 dark:ring-white/[0.06]">
+          <div className="divide-y divide-gray-100 dark:divide-gray-700/80">
+            {placementSuccess && (
+              <div
+                className="flex gap-4 px-5 py-4 sm:px-6 sm:py-5"
+                role="status"
+                aria-live="polite"
+              >
+                <div
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-lime-400/90 to-emerald-500 text-white shadow-md shadow-lime-500/25 dark:from-lime-500 dark:to-emerald-600 dark:shadow-lime-900/30"
+                  aria-hidden={true}
+                >
+                  <svg
+                    className="h-5 w-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2.5}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M5 13l4 4L19 7"
+                    />
+                  </svg>
+                </div>
+                <div className="min-w-0 flex-1 pt-0.5">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                    Encaixe registrado
+                  </p>
+                  <p className="mt-1 text-sm leading-relaxed text-gray-800 dark:text-gray-100">
+                    {placementSuccess}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {placementVacancies && placementVacancies.lines.length > 0 && (
+              <div
+                className="px-5 py-4 sm:px-6 sm:py-5"
+                role="region"
+                aria-label="Vagas livres para preenchimento manual"
+              >
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300/90">
+                  Vagas compatíveis ainda livres
+                </p>
+                <p className="mt-1 text-sm font-medium text-amber-950 dark:text-amber-100">
+                  {placementVacancies.title}
+                </p>
+                <ul className="mt-3 max-h-48 list-inside list-disc space-y-1 overflow-y-auto text-xs leading-relaxed text-amber-900/95 dark:text-amber-100/90 sm:text-sm">
+                  {placementVacancies.lines.map((line, i) => (
+                    <li key={`${line}-${i}`}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="bg-gradient-to-r from-gray-50/95 to-emerald-50/40 px-5 py-4 sm:px-6 dark:from-gray-950/80 dark:to-emerald-950/20">
+              <p className="text-center text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500 dark:text-gray-400">
+                Legenda das células
+              </p>
+              <div className="mx-auto mt-3 flex max-w-2xl flex-col gap-3 sm:mt-4 sm:flex-row sm:justify-center sm:gap-6">
+                <div className="flex items-start gap-3 rounded-xl border border-lime-400/50 bg-white/90 px-3 py-2.5 shadow-sm dark:border-lime-500/35 dark:bg-gray-900/60">
+                  <span className="mt-0.5 inline-flex h-6 min-w-[3.25rem] items-center justify-center rounded-md border-2 border-lime-500 bg-lime-50 text-[10px] font-bold text-lime-800 dark:border-lime-400 dark:bg-lime-950/50 dark:text-lime-200">
+                    Verde
+                  </span>
+                  <span className="text-xs leading-snug text-gray-600 dark:text-gray-300">
+                    Nome preenchido: moldura verde + campo com borda neon na
+                    tabela.
+                  </span>
+                </div>
+                <div className="flex items-start gap-3 rounded-xl border border-amber-400/45 bg-white/90 px-5 py-2.5 shadow-sm dark:border-amber-500/35 dark:bg-gray-900/60">
+                  <span className="mt-0.5 inline-flex h-6 min-w-[3.25rem] items-center justify-center rounded-md border-2 border-amber-500 bg-amber-50 text-[10px] font-bold text-amber-900 dark:border-amber-400 dark:bg-amber-950/50 dark:text-amber-100">
+                    Âmbar
+                  </span>
+                  <span className="text-xs leading-snug text-gray-600 dark:text-gray-300">
+                    Nome repetido: moldura e campo em âmbar — confira se foi
+                    intencional.
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
         <section
-          className="mx-auto mt-12 max-w-6xl px-4 sm:px-6"
+          className="mx-auto mt-10 max-w-6xl px-4 sm:px-6"
           aria-labelledby="calendario-vagas-titulo"
         >
           <h2
@@ -1130,42 +1321,6 @@ export function VolunteerScheduler() {
               selecionados. Tudo permanece em localStorage por período.
             </p>
           </div>
-          {placementSuccess && (
-            <div
-              className="mx-auto mt-4 max-w-2xl rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-100"
-              role="status"
-            >
-              {placementSuccess}
-            </div>
-          )}
-          {placementVacancies && placementVacancies.lines.length > 0 && (
-            <div
-              className="mx-auto mt-4 max-w-3xl rounded-xl border border-amber-200 bg-amber-50/90 p-4 dark:border-amber-900/50 dark:bg-amber-950/30"
-              role="region"
-              aria-label="Vagas livres para preenchimento manual"
-            >
-              <p className="text-sm font-medium text-amber-950 dark:text-amber-100">
-                {placementVacancies.title}
-              </p>
-              <ul className="mt-2 max-h-56 list-inside list-disc overflow-y-auto text-xs text-amber-900 dark:text-amber-200/95 sm:text-sm">
-                {placementVacancies.lines.map((line, i) => (
-                  <li key={`${line}-${i}`} className="py-0.5">
-                    {line}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <p className="mx-auto mt-4 max-w-2xl text-center text-xs text-gray-600 dark:text-gray-400">
-            <span className="mr-2 inline-block rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 dark:border-emerald-700 dark:bg-emerald-950/40">
-              Verde
-            </span>
-            toda célula com nome: mesma borda verde neon (visão acumulativa) ·{" "}
-            <span className="mr-2 inline-block rounded border border-amber-400 bg-amber-50 px-2 py-0.5 dark:border-amber-600 dark:bg-amber-950/40">
-              Âmbar
-            </span>
-            mesmo nome em mais de uma vaga (duplicado)
-          </p>
           {duplicateGroups.length > 0 && (
             <div
               className="mx-auto mt-4 max-w-3xl rounded-xl border border-violet-200 bg-violet-50/90 p-4 dark:border-violet-900/50 dark:bg-violet-950/25"
