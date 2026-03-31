@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   DAYS,
   SHIFTS,
@@ -16,10 +16,174 @@ import {
   type ExtraRoleId,
   EXTRA_ROLES,
 } from "../lib/volunteer-scheduling";
+import {
+  MAY_2026_SUNDAYS,
+  formatDateBr,
+  dateKeyLocal,
+  scheduleCellKey,
+  type CalendarShiftId,
+  loadScheduleGridFromStorage,
+  saveScheduleGridToStorage,
+  findFirstMatchingEmptySlot,
+  listEmptySlotsMatchingFilters,
+  listEmptySlots,
+  formatDescriptorLine,
+} from "../lib/may2026Schedule";
 
 type AiPanel = { text: string | null; error: string | null; loading: boolean };
 
 const idleAi: AiPanel = { text: null, error: null, loading: false };
+
+type RoomRow =
+  | { key: "facilitador"; label: string; type: "facilitador" }
+  | { key: string; label: string; type: "sala"; auxiliares: number };
+
+const CALENDAR_ROWS: readonly RoomRow[] = [
+  { key: "facilitador", label: "FACILITADOR", type: "facilitador" },
+  { key: "kids", label: "KIDS", type: "sala", auxiliares: 3 },
+  { key: "super_kids", label: "SUPER KIDS", type: "sala", auxiliares: 3 },
+  { key: "juniores", label: "JUNIORES", type: "sala", auxiliares: 2 },
+];
+
+const inputSlotClass =
+  "w-full min-w-0 rounded-md border border-gray-200/90 bg-white px-1.5 py-1 text-xs text-gray-900 placeholder:text-gray-400 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 dark:border-gray-600 dark:bg-gray-900/70 dark:text-white dark:placeholder:text-gray-500";
+
+function ShiftScheduleTable(props: {
+  shiftId: CalendarShiftId;
+  shiftLabel: string;
+  headerClass: string;
+  values: Record<string, string>;
+  onCellChange: (key: string, value: string) => void;
+}) {
+  const { shiftId, shiftLabel, headerClass, values, onCellChange } = props;
+  return (
+    <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm dark:border-gray-700">
+      <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+        <thead>
+          <tr>
+            <th
+              colSpan={MAY_2026_SUNDAYS.length + 1}
+              className={`px-3 py-2 text-center text-xs font-bold uppercase tracking-wide text-white ${headerClass}`}
+            >
+              {shiftLabel}
+            </th>
+          </tr>
+          <tr className="border-b border-gray-200 bg-gray-50 dark:border-gray-600 dark:bg-gray-800/80">
+            <th className="w-36 border-r border-gray-200 px-2 py-2 text-xs font-semibold text-gray-700 dark:border-gray-600 dark:text-gray-200">
+              Função / Sala
+            </th>
+            {MAY_2026_SUNDAYS.map((d) => (
+              <th
+                key={dateKeyLocal(d)}
+                className="min-w-[7.5rem] border-r border-gray-200 px-2 py-2 text-center text-xs font-semibold text-gray-700 last:border-r-0 dark:border-gray-600 dark:text-gray-200"
+              >
+                Dom {formatDateBr(d)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {CALENDAR_ROWS.map((row) => (
+            <tr
+              key={row.key}
+              className="border-b border-gray-200 last:border-b-0 dark:border-gray-600"
+            >
+              <td className="border-r border-gray-200 bg-gray-50/80 px-2 py-2 align-top text-xs font-semibold uppercase text-gray-800 dark:border-gray-600 dark:bg-gray-800/40 dark:text-gray-100">
+                {row.label}
+              </td>
+              {MAY_2026_SUNDAYS.map((d) => {
+                const dk = dateKeyLocal(d);
+                return (
+                  <td
+                    key={`${row.key}-${dk}`}
+                    className="border-r border-gray-200 px-2 py-2 align-top last:border-r-0 dark:border-gray-600"
+                  >
+                    {row.type === "facilitador" ? (
+                      <div className="space-y-0.5 text-xs">
+                        <span className="font-medium text-gray-800 dark:text-gray-200">
+                          Facilitador
+                        </span>
+                        <input
+                          type="text"
+                          value={
+                            values[
+                              scheduleCellKey(shiftId, dk, row.key, "fac")
+                            ] ?? ""
+                          }
+                          onChange={(e) =>
+                            onCellChange(
+                              scheduleCellKey(shiftId, dk, row.key, "fac"),
+                              e.target.value
+                            )
+                          }
+                          placeholder="Nome"
+                          autoComplete="off"
+                          aria-label={`${shiftLabel} ${row.label} ${formatDateBr(d)} facilitador`}
+                          className={inputSlotClass}
+                        />
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5 text-xs">
+                        <div>
+                          <span className="font-semibold text-red-600 dark:text-red-400">
+                            Titular
+                          </span>
+                          <input
+                            type="text"
+                            value={
+                              values[
+                                scheduleCellKey(shiftId, dk, row.key, "tit")
+                              ] ?? ""
+                            }
+                            onChange={(e) =>
+                              onCellChange(
+                                scheduleCellKey(shiftId, dk, row.key, "tit"),
+                                e.target.value
+                              )
+                            }
+                            placeholder="Nome"
+                            autoComplete="off"
+                            aria-label={`${shiftLabel} ${row.label} ${formatDateBr(d)} titular`}
+                            className={`mt-0.5 ${inputSlotClass}`}
+                          />
+                        </div>
+                        {Array.from({ length: row.auxiliares }, (_, i) => {
+                          const part = `aux${i}`;
+                          const k = scheduleCellKey(shiftId, dk, row.key, part);
+                          return (
+                            <div
+                              key={i}
+                              className="border-t border-dashed border-gray-200 pt-1 dark:border-gray-600"
+                            >
+                              <span className="font-medium text-gray-700 dark:text-gray-300">
+                                Auxiliar {i + 1}
+                              </span>
+                              <input
+                                type="text"
+                                value={values[k] ?? ""}
+                                onChange={(e) =>
+                                  onCellChange(k, e.target.value)
+                                }
+                                placeholder="Nome"
+                                autoComplete="off"
+                                aria-label={`${shiftLabel} ${row.label} ${formatDateBr(d)} auxiliar ${i + 1}`}
+                                className={`mt-0.5 ${inputSlotClass}`}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function toggle<T extends string>(set: Set<T>, value: T): Set<T> {
   const next = new Set(set);
@@ -79,8 +243,19 @@ export function VolunteerScheduler() {
   const [aiSummary, setAiSummary] = useState<AiPanel>(idleAi);
   const [aiNoMatch, setAiNoMatch] = useState<AiPanel>(idleAi);
   const [aiConfirm, setAiConfirm] = useState<AiPanel>(idleAi);
+  const [scheduleGrid, setScheduleGrid] = useState<Record<string, string>>(
+    loadScheduleGridFromStorage
+  );
+  const [placementSuccess, setPlacementSuccess] = useState<string | null>(null);
+  const [placementVacancies, setPlacementVacancies] = useState<{
+    title: string;
+    lines: string[];
+  } | null>(null);
 
-  
+  useEffect(() => {
+    saveScheduleGridToStorage(scheduleGrid);
+  }, [scheduleGrid]);
+
   const constraints: VolunteerConstraints = useMemo(
     () => ({
       name: name.trim(),
@@ -110,6 +285,109 @@ export function VolunteerScheduler() {
     constraints.shifts.length > 0 &&
     constraints.roles.length > 0;
 
+  const needsRoomForGrid =
+    roles.has("titular") || roles.has("auxiliar");
+
+  const canEncaixarNaTabela =
+    name.trim().length > 0 &&
+    days.has("dom") &&
+    shifts.size > 0 &&
+    roles.size > 0 &&
+    (!needsRoomForGrid || extraRoles.size > 0);
+
+  function exportScheduleJson() {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      month: "2026-05",
+      sundaysDomingo: true,
+      grid: scheduleGrid,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const a = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = "escala-voluntarios-maio-2026.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleEncaixarNaTabela() {
+    setPlacementSuccess(null);
+    setPlacementVacancies(null);
+    const trimmed = name.trim();
+    if (!trimmed) {
+      window.alert("Informe o nome do voluntário.");
+      return;
+    }
+    if (!days.has("dom")) {
+      window.alert(
+        'A tabela de maio de 2026 usa apenas domingos. Marque "Domingo" em Dias para encaixar automaticamente.'
+      );
+      return;
+    }
+    if (shifts.size === 0) {
+      window.alert("Selecione ao menos um turno.");
+      return;
+    }
+    if (roles.size === 0) {
+      window.alert("Selecione ao menos uma função.");
+      return;
+    }
+    if (needsRoomForGrid && extraRoles.size === 0) {
+      window.alert(
+        "Para Titular ou Auxiliar, selecione ao menos uma sala (Kids, Super Kids ou Juniores)."
+      );
+      return;
+    }
+
+    const placementConstraints = {
+      shifts: [...shifts] as ShiftId[],
+      roles: [...roles] as RoleId[],
+      extraRoles: [...extraRoles] as ExtraRoleId[],
+    };
+
+    const found = findFirstMatchingEmptySlot(
+      scheduleGrid,
+      placementConstraints
+    );
+
+    if (found) {
+      setScheduleGrid((prev) => ({ ...prev, [found.key]: trimmed }));
+      setPlacementSuccess(
+        `${trimmed} foi encaixado(a) em: ${found.label}. A escala acumula cada nome e já foi salva neste navegador.`
+      );
+      return;
+    }
+
+    const matchingFree = listEmptySlotsMatchingFilters(
+      scheduleGrid,
+      placementConstraints
+    );
+    const lines =
+      matchingFree.length > 0
+        ? matchingFree.map(formatDescriptorLine)
+        : listEmptySlots(scheduleGrid).map(formatDescriptorLine);
+
+    const title =
+      matchingFree.length > 0
+        ? "Com o perfil que você marcou, ainda há estas vagas livres (preencha manualmente na tabela):"
+        : "Com esse perfil não há vagas livres. Todas as vagas ainda vazias na escala:";
+
+    const preview = lines.slice(0, 28).join("\n");
+    const suffix =
+      lines.length > 28
+        ? `\n… e mais ${lines.length - 28} vaga(s). Veja a lista completa abaixo.`
+        : "";
+
+    window.alert(
+      `Não foi possível encaixar automaticamente (todas as vagas compatíveis nesta ordem já estão ocupadas).\n\n${title}\n\n${preview}${suffix}`
+    );
+
+    setPlacementVacancies({ title, lines });
+  }
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
@@ -126,6 +404,8 @@ export function VolunteerScheduler() {
     setAiSummary(idleAi);
     setAiNoMatch(idleAi);
     setAiConfirm(idleAi);
+    setPlacementSuccess(null);
+    setPlacementVacancies(null);
   }
 
   function requestGeminiSummary() {
@@ -169,7 +449,7 @@ export function VolunteerScheduler() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-emerald-50/80 dark:from-gray-950 dark:via-gray-900 dark:to-emerald-950/40">
-      <div className="mx-auto max-w-3xl px-4 py-12 sm:py-16">
+      <div className="mx-auto max-w-3xl px-4 pt-12 sm:pt-16">
         <header className="mb-10 text-center">
           <p className="text-sm font-medium uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
             Agendamento de voluntários
@@ -182,7 +462,9 @@ export function VolunteerScheduler() {
             Mostramos os dias e horários compatíveis com as vagas abertas.
           </p>
         </header>
+      </div>
 
+      <div className="mx-auto max-w-3xl px-4">
         <form
           onSubmit={handleSubmit}
           className="rounded-2xl border border-gray-200/80 bg-white/90 p-6 shadow-xl shadow-gray-200/50 backdrop-blur dark:border-gray-800 dark:bg-gray-900/90 dark:shadow-black/20 sm:p-8"
@@ -211,8 +493,15 @@ export function VolunteerScheduler() {
 
             <fieldset>
               <legend className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Dias 
+                Dias
               </legend>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Para encaixar na tabela de maio/2026, inclua{" "}
+                <span className="font-medium text-gray-700 dark:text-gray-300">
+                  Domingo
+                </span>{" "}
+                (só há colunas para os domingos do mês).
+              </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {DAYS.map((d) => {
                   const active = days.has(d.id);
@@ -310,7 +599,7 @@ export function VolunteerScheduler() {
                       }}
                       className={`rounded-full px-4 py-2 text-sm font-medium transition ${
                         active
-                          ? "bg-emerald-600 text-white shadow-sm dark:bg-emerald-500"
+                          ? "bg-emerald-600 text-white shadow-sm dark:bg-emerald-600"
                           : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
                       }`}
                     >
@@ -329,6 +618,19 @@ export function VolunteerScheduler() {
               >
                 Ver dias e horários compatíveis
               </button>
+              <button
+                type="button"
+                onClick={handleEncaixarNaTabela}
+                disabled={!canEncaixarNaTabela}
+                title={
+                  !days.has("dom")
+                    ? 'Marque "Domingo" para usar a escala de maio/2026'
+                    : undefined
+                }
+                className="inline-flex items-center justify-center rounded-xl border-2 border-emerald-600/50 bg-emerald-50 px-5 py-3 text-sm font-semibold text-emerald-900 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:text-emerald-100 dark:hover:bg-emerald-950/60"
+              >
+                Encaixar na tabela
+              </button>
               {submitted && (
                 <button
                   type="button"
@@ -339,9 +641,115 @@ export function VolunteerScheduler() {
                 </button>
               )}
             </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              <strong className="font-medium text-gray-700 dark:text-gray-300">
+                Encaixar na tabela
+              </strong>{" "}
+              coloca o nome na primeira vaga livre que combina com turno, função e
+              salas marcados (na ordem dos domingos). Cada encaixe soma ao que já
+              está preenchido e fica salvo no navegador.
+            </p>
           </div>
         </form>
+      </div>
 
+        <section
+          className="mx-auto mt-12 max-w-6xl px-4 sm:px-6"
+          aria-labelledby="calendario-vagas-titulo"
+        >
+          <h2
+            id="calendario-vagas-titulo"
+            className="text-center text-lg font-semibold text-gray-900 dark:text-white"
+          >
+            Calendário de vagas — domingos de maio de 2026
+          </h2>
+          <p className="mx-auto mt-2 max-w-2xl text-center text-sm text-gray-600 dark:text-gray-400">
+            Preencha os nomes conforme os critérios de cada função. Por turno
+            (manhã, tarde e noite):{" "}
+            <strong className="font-medium text-gray-800 dark:text-gray-200">
+              Facilitador
+            </strong>{" "}
+            (1); em cada sala:{" "}
+            <strong className="font-medium text-gray-800 dark:text-gray-200">
+              Titular
+            </strong>{" "}
+            (1) e{" "}
+            <strong className="font-medium text-gray-800 dark:text-gray-200">
+              Auxiliares
+            </strong>{" "}
+            — 3 em Kids e Super Kids, 2 em Juniores.
+          </p>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={exportScheduleJson}
+              className="inline-flex items-center rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 shadow-sm transition hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+            >
+              Exportar JSON
+            </button>
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              Inclui todos os nomes da grade + data da exportação. A escala também
+              permanece salva neste navegador (localStorage).
+            </span>
+          </div>
+          {placementSuccess && (
+            <div
+              className="mx-auto mt-4 max-w-2xl rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-100"
+              role="status"
+            >
+              {placementSuccess}
+            </div>
+          )}
+          {placementVacancies && placementVacancies.lines.length > 0 && (
+            <div
+              className="mx-auto mt-4 max-w-3xl rounded-xl border border-amber-200 bg-amber-50/90 p-4 dark:border-amber-900/50 dark:bg-amber-950/30"
+              role="region"
+              aria-label="Vagas livres para preenchimento manual"
+            >
+              <p className="text-sm font-medium text-amber-950 dark:text-amber-100">
+                {placementVacancies.title}
+              </p>
+              <ul className="mt-2 max-h-56 list-inside list-disc overflow-y-auto text-xs text-amber-900 dark:text-amber-200/95 sm:text-sm">
+                {placementVacancies.lines.map((line, i) => (
+                  <li key={`${line}-${i}`} className="py-0.5">
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="mt-6 space-y-8">
+            <ShiftScheduleTable
+              shiftId="manha"
+              shiftLabel="MANHÃ"
+              headerClass="bg-amber-600 dark:bg-amber-700"
+              values={scheduleGrid}
+              onCellChange={(key, value) =>
+                setScheduleGrid((prev) => ({ ...prev, [key]: value }))
+              }
+            />
+            <ShiftScheduleTable
+              shiftId="tarde"
+              shiftLabel="TARDE"
+              headerClass="bg-blue-600 dark:bg-blue-700"
+              values={scheduleGrid}
+              onCellChange={(key, value) =>
+                setScheduleGrid((prev) => ({ ...prev, [key]: value }))
+              }
+            />
+            <ShiftScheduleTable
+              shiftId="noite"
+              shiftLabel="NOITE"
+              headerClass="bg-violet-900 dark:bg-violet-950"
+              values={scheduleGrid}
+              onCellChange={(key, value) =>
+                setScheduleGrid((prev) => ({ ...prev, [key]: value }))
+              }
+            />
+          </div>
+        </section>
+
+      <div className="mx-auto max-w-3xl px-4 pb-12 sm:pb-16">
         {submitted && (
           <section
             className="mt-10 rounded-2xl border border-emerald-200/80 bg-emerald-50/50 p-6 dark:border-emerald-900/50 dark:bg-emerald-950/30 sm:p-8"
@@ -501,3 +909,6 @@ export function VolunteerScheduler() {
     </div>
   );
 }
+
+
+
