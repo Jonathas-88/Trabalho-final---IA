@@ -5,6 +5,7 @@ import {
   buildPrompt,
   buildNoMatchPrompt,
   buildSlotConfirmPrompt,
+  buildScheduleDuplicatesPrompt,
 } from "./prompt.js";
 import { callGemini } from "./gemini.js";
 
@@ -26,7 +27,7 @@ app.use(express.json());
 
 /**
  * @param {Record<string, unknown>} body
- * @returns {"matched_summary" | "no_match_hint" | "slot_confirm"}
+ * @returns {"matched_summary" | "no_match_hint" | "slot_confirm" | "schedule_duplicates"}
  */
 function resolveKind(body) {
   const raw =
@@ -34,7 +35,8 @@ function resolveKind(body) {
   if (
     raw === "no_match_hint" ||
     raw === "slot_confirm" ||
-    raw === "matched_summary"
+    raw === "matched_summary" ||
+    raw === "schedule_duplicates"
   ) {
     return raw;
   }
@@ -76,14 +78,41 @@ app.post("/api/gemini-suggest", async (req, res) => {
   const shifts = Array.isArray(body.shifts) ? body.shifts : [];
   const roles = Array.isArray(body.roles) ? body.roles : [];
 
-  if (!volunteerName) {
+  if (kind !== "schedule_duplicates" && !volunteerName) {
     res.status(400).json({ error: "volunteerName é obrigatório" });
     return;
   }
 
   /** @type {string} */
   let prompt;
-  if (kind === "matched_summary") {
+  if (kind === "schedule_duplicates") {
+    const duplicates = Array.isArray(body.duplicates) ? body.duplicates : [];
+    if (duplicates.length === 0) {
+      res.status(400).json({ error: "duplicates não pode ser vazio neste modo" });
+      return;
+    }
+    const periodLabel =
+      typeof body.periodLabel === "string" && body.periodLabel.trim()
+        ? body.periodLabel.trim()
+        : "período atual";
+    const emptySlots = Array.isArray(body.emptySlotLabels)
+      ? body.emptySlotLabels.filter((x) => typeof x === "string")
+      : [];
+    const normalized = duplicates
+      .map((d) => {
+        const name = typeof d?.name === "string" ? d.name.trim() : "";
+        const placements = Array.isArray(d?.placements)
+          ? d.placements.filter((p) => typeof p === "string")
+          : [];
+        return name && placements.length > 0 ? { name, placements } : null;
+      })
+      .filter(Boolean);
+    if (normalized.length === 0) {
+      res.status(400).json({ error: "duplicates inválido (name e placements)" });
+      return;
+    }
+    prompt = buildScheduleDuplicatesPrompt(periodLabel, normalized, emptySlots);
+  } else if (kind === "matched_summary") {
     const matchedSlots = Array.isArray(body.matchedSlots)
       ? body.matchedSlots
       : [];
@@ -143,6 +172,6 @@ app.post("/api/gemini-suggest", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`volunteer-api em http://localhost:${PORT}`);
   console.log(
-    `  POST /api/gemini-suggest (kind: matched_summary | no_match_hint | slot_confirm)`
+    `  POST /api/gemini-suggest (kind: matched_summary | no_match_hint | slot_confirm | schedule_duplicates)`
   );
 });

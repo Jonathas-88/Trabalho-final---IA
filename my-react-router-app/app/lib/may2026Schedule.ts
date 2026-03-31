@@ -1,14 +1,5 @@
 import type { ExtraRoleId, RoleId, ShiftId } from "./volunteer-scheduling";
 
-/** Domingos de maio de 2026 (data local). */
-export const MAY_2026_SUNDAYS: readonly Date[] = [
-  new Date(2026, 4, 3),
-  new Date(2026, 4, 10),
-  new Date(2026, 4, 17),
-  new Date(2026, 4, 24),
-  new Date(2026, 4, 31),
-];
-
 export type CalendarShiftId = "manha" | "tarde" | "noite";
 
 export const CALENDAR_SHIFT_ORDER: readonly CalendarShiftId[] = [
@@ -23,6 +14,17 @@ export const CALENDAR_SHIFT_LABELS: Record<CalendarShiftId, string> = {
   noite: "NOITE",
 };
 
+/** Retorna todos os domingos do mês (ano, mês 0–11, data local). */
+export function sundaysInMonth(year: number, monthIndex0: number): Date[] {
+  const out: Date[] = [];
+  const last = new Date(year, monthIndex0 + 1, 0).getDate();
+  for (let day = 1; day <= last; day++) {
+    const d = new Date(year, monthIndex0, day);
+    if (d.getDay() === 0) out.push(d);
+  }
+  return out;
+}
+
 export function formatDateBr(d: Date): string {
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -31,6 +33,10 @@ export function formatDateBr(d: Date): string {
 
 export function dateKeyLocal(d: Date): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+export function periodKey(year: number, month1to12: number): string {
+  return `${year}-${month1to12}`;
 }
 
 export function scheduleCellKey(
@@ -64,11 +70,12 @@ function auxCountForRow(rowKey: string): number {
   return rowKey === "juniores" ? 2 : 3;
 }
 
-/** Todas as células da grade (ordem: turno → data → linha). */
-export function enumerateScheduleSlots(): SlotDescriptor[] {
+export function enumerateScheduleSlots(
+  sundays: readonly Date[]
+): SlotDescriptor[] {
   const out: SlotDescriptor[] = [];
   for (const shiftId of CALENDAR_SHIFT_ORDER) {
-    for (const d of MAY_2026_SUNDAYS) {
+    for (const d of sundays) {
       const dk = dateKeyLocal(d);
       out.push({
         key: scheduleCellKey(shiftId, dk, "facilitador", "fac"),
@@ -162,38 +169,146 @@ export function formatSlotDescriptor(gridKey: string): string {
 }
 
 export function listEmptySlots(
-  grid: Record<string, string>
+  grid: Record<string, string>,
+  sundays: readonly Date[]
 ): SlotDescriptor[] {
-  return enumerateScheduleSlots().filter((s) => isCellEmpty(grid, s.key));
+  return enumerateScheduleSlots(sundays).filter((s) =>
+    isCellEmpty(grid, s.key)
+  );
 }
 
-export const SCHEDULE_GRID_STORAGE_KEY = "volunteer-schedule-may-2026-grid";
+const OLD_FLAT_STORAGE_KEY = "volunteer-schedule-may-2026-grid";
+export const SCHEDULE_STORAGE_KEY_V2 = "volunteer-schedule-v2";
 
-export function loadScheduleGridFromStorage(): Record<string, string> {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = localStorage.getItem(SCHEDULE_GRID_STORAGE_KEY);
-    if (!raw) return {};
-    const p = JSON.parse(raw) as unknown;
-    if (!p || typeof p !== "object" || Array.isArray(p)) return {};
-    const o = p as Record<string, unknown>;
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(o)) {
-      if (typeof v === "string") out[k] = v;
-    }
-    return out;
-  } catch {
-    return {};
+export type ScheduleStoreV2 = {
+  version: 2;
+  year: number;
+  month: number;
+  grids: Record<string, Record<string, string>>;
+};
+
+const DEFAULT_YEAR = 2026;
+const DEFAULT_MONTH = 5;
+
+function emptyGrids(): Record<string, Record<string, string>> {
+  return {};
+}
+
+export function loadScheduleStore(): ScheduleStoreV2 {
+  if (typeof window === "undefined") {
+    return {
+      version: 2,
+      year: DEFAULT_YEAR,
+      month: DEFAULT_MONTH,
+      grids: emptyGrids(),
+    };
   }
+  try {
+    const rawV2 = localStorage.getItem(SCHEDULE_STORAGE_KEY_V2);
+    if (rawV2) {
+      const p = JSON.parse(rawV2) as unknown;
+      if (
+        p &&
+        typeof p === "object" &&
+        !Array.isArray(p) &&
+        (p as ScheduleStoreV2).version === 2
+      ) {
+        const o = p as ScheduleStoreV2;
+        const grids =
+          o.grids && typeof o.grids === "object" && !Array.isArray(o.grids)
+            ? { ...o.grids }
+            : emptyGrids();
+        for (const k of Object.keys(grids)) {
+          const g = grids[k];
+          if (!g || typeof g !== "object" || Array.isArray(g)) {
+            delete grids[k];
+            continue;
+          }
+          const clean: Record<string, string> = {};
+          for (const [ck, cv] of Object.entries(g)) {
+            if (typeof cv === "string") clean[ck] = cv;
+          }
+          grids[k] = clean;
+        }
+        return {
+          version: 2,
+          year: Number.isFinite(o.year) ? o.year : DEFAULT_YEAR,
+          month:
+            Number.isFinite(o.month) && o.month >= 1 && o.month <= 12
+              ? o.month
+              : DEFAULT_MONTH,
+          grids,
+        };
+      }
+    }
+
+    const rawOld = localStorage.getItem(OLD_FLAT_STORAGE_KEY);
+    if (rawOld) {
+      const p = JSON.parse(rawOld) as unknown;
+      const grid: Record<string, string> = {};
+      if (p && typeof p === "object" && !Array.isArray(p)) {
+        for (const [k, v] of Object.entries(p as Record<string, unknown>)) {
+          if (typeof v === "string") grid[k] = v;
+        }
+      }
+      const pk = periodKey(DEFAULT_YEAR, DEFAULT_MONTH);
+      return {
+        version: 2,
+        year: DEFAULT_YEAR,
+        month: DEFAULT_MONTH,
+        grids: Object.keys(grid).length > 0 ? { [pk]: grid } : emptyGrids(),
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+  return {
+    version: 2,
+    year: DEFAULT_YEAR,
+    month: DEFAULT_MONTH,
+    grids: emptyGrids(),
+  };
 }
 
-export function saveScheduleGridToStorage(grid: Record<string, string>): void {
+export function saveScheduleStore(store: ScheduleStoreV2): void {
   if (typeof window === "undefined") return;
   try {
-    localStorage.setItem(SCHEDULE_GRID_STORAGE_KEY, JSON.stringify(grid));
+    localStorage.setItem(SCHEDULE_STORAGE_KEY_V2, JSON.stringify(store));
   } catch {
-    /* ignore quota */
+    /* quota */
   }
+}
+
+/** Extrai objeto `grid` de export JSON (vários formatos). */
+export function parseImportedGrid(
+  data: unknown
+): Record<string, string> | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const o = data as Record<string, unknown>;
+  let raw: unknown = o.grid;
+  if (!raw && o.grids && typeof o.grids === "object") {
+    const g = o.grids as Record<string, unknown>;
+    const keys = Object.keys(g);
+    if (keys.length === 1 && g[keys[0]] && typeof g[keys[0]] === "object") {
+      raw = g[keys[0]];
+    }
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    const keys = Object.keys(o);
+    if (
+      keys.length > 0 &&
+      keys.every((k) => k.includes(":")) &&
+      keys.every((k) => typeof o[k] === "string")
+    ) {
+      raw = o;
+    } else return null;
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "string" && v.trim()) out[k] = v.trim();
+    else if (typeof v === "string") out[k] = "";
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 const ROLE_TRY_ORDER: readonly RoleId[] = [
@@ -208,13 +323,10 @@ export interface PlacementConstraints {
   extraRoles: ExtraRoleId[];
 }
 
-/**
- * Primeira vaga livre que combina com turnos/função/salas escolhidos.
- * Considera a grade acumulada (nomes já preenchidos ocupam a vaga).
- */
 export function findFirstMatchingEmptySlot(
   grid: Record<string, string>,
-  constraints: PlacementConstraints
+  constraints: PlacementConstraints,
+  sundays: readonly Date[]
 ): { key: string; label: string } | null {
   const shiftSet = new Set(
     constraints.shifts.filter((s): s is CalendarShiftId =>
@@ -223,9 +335,7 @@ export function findFirstMatchingEmptySlot(
   );
   if (shiftSet.size === 0) return null;
 
-  const dates = [...MAY_2026_SUNDAYS];
-
-  for (const d of dates) {
+  for (const d of sundays) {
     const dk = dateKeyLocal(d);
     for (const shiftId of CALENDAR_SHIFT_ORDER) {
       if (!shiftSet.has(shiftId)) continue;
@@ -274,7 +384,6 @@ export function findFirstMatchingEmptySlot(
           continue;
         }
 
-        /* auxiliar */
         for (const room of rooms) {
           const n = auxCountForRow(room);
           for (let i = 0; i < n; i++) {
@@ -299,17 +408,47 @@ export function findFirstMatchingEmptySlot(
   return null;
 }
 
-/** Vagas livres que ainda respeitam os mesmos filtros (para orientar o usuário). */
+/** Nome repetido em mais de uma célula (comparação sem diferenciar maiúsculas e espaços). */
+export function findDuplicateNameAssignments(
+  grid: Record<string, string>
+): Array<{
+  normalized: string;
+  displayName: string;
+  cellKeys: string[];
+}> {
+  const groups = new Map<string, { display: string; keys: string[] }>();
+  for (const [cellKey, raw] of Object.entries(grid)) {
+    const v = String(raw).trim();
+    if (!v) continue;
+    const normalized = v.toLowerCase().replace(/\s+/g, " ").trim();
+    const g = groups.get(normalized);
+    if (!g) {
+      groups.set(normalized, { display: v, keys: [cellKey] });
+    } else {
+      g.keys.push(cellKey);
+      if (v.length > g.display.length) g.display = v;
+    }
+  }
+  return [...groups.entries()]
+    .filter(([, g]) => g.keys.length > 1)
+    .map(([normKey, g]) => ({
+      normalized: normKey,
+      displayName: g.display,
+      cellKeys: g.keys,
+    }));
+}
+
 export function listEmptySlotsMatchingFilters(
   grid: Record<string, string>,
-  constraints: PlacementConstraints
+  constraints: PlacementConstraints,
+  sundays: readonly Date[]
 ): SlotDescriptor[] {
   const shiftSet = new Set(
     constraints.shifts.filter((s): s is CalendarShiftId =>
       (CALENDAR_SHIFT_ORDER as readonly string[]).includes(s)
     )
   );
-  const empty = listEmptySlots(grid);
+  const empty = listEmptySlots(grid, sundays);
   return empty.filter((s) => {
     if (!shiftSet.has(s.shiftId)) return false;
     if (s.roleKind === "facilitador") {

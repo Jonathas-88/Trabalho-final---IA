@@ -87,6 +87,46 @@ Tarefa: em português do Brasil, 3 a 5 frases curtas e empáticas:
  * @param {string} volunteerName
  * @param {{ day: string; shift: string; role: string }} slot
  */
+/**
+ * @param {string} periodLabel ex.: "Maio de 2026"
+ * @param {Array<{ name: string; placements: string[] }>} duplicates
+ * @param {string[]} emptySlotLabels amostra de vagas ainda livres
+ */
+export function buildScheduleDuplicatesPrompt(
+  periodLabel,
+  duplicates,
+  emptySlotLabels
+) {
+  const dupBlock = duplicates
+    .map(
+      (d) =>
+        `Nome: "${d.name}"\n  Ocorrências:\n${d.placements.map((p) => `    - ${p}`).join("\n")}`
+    )
+    .join("\n\n");
+
+  const emptyBlock =
+    emptySlotLabels.length > 0
+      ? emptySlotLabels.map((l) => `- ${l}`).join("\n")
+      : "(Nenhuma vaga vazia listada — a escala pode estar completa.)";
+
+  return `Você é assistente de coordenação de voluntários de ministério infantil no Brasil.
+
+Período da escala: ${periodLabel}
+
+PROBLEMA: o mesmo nome de voluntário foi colocado em mais de um lugar na tabela (pode ser engano ou pessoa que realmente serve em dois turnos no mesmo dia — o coordenador precisa decidir).
+
+Duplicidades detectadas pelo sistema:
+${dupBlock}
+
+Amostra de vagas AINDA LIVRES neste período (use só estas como opções reais de remanejamento; não invente datas ou turnos):
+${emptyBlock}
+
+Tarefa: responda em português do Brasil, texto plano, sem markdown:
+1) Explique em 1–2 frases que há nomes repetidos e por que isso merece revisão.
+2) Para cada nome repetido, sugira de forma prática: ou confirmar se a duplicidade é intencional, ou mover uma das ocorrências para uma das vagas livres listadas (cite 2 ou 3 opções concretas da lista de vagas livres quando fizer sentido).
+3) Tom cordial e objetivo; não acuse o usuário; não prometa que a vaga existe além da lista fornecida.`;
+}
+
 export function buildSlotConfirmPrompt(volunteerName, slot) {
   return `Você é assistente de coordenação de voluntários no Brasil.
 

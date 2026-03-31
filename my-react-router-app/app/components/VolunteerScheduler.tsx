@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DAYS,
   SHIFTS,
@@ -17,18 +17,28 @@ import {
   EXTRA_ROLES,
 } from "../lib/volunteer-scheduling";
 import {
-  MAY_2026_SUNDAYS,
+  sundaysInMonth,
   formatDateBr,
   dateKeyLocal,
   scheduleCellKey,
+  periodKey,
   type CalendarShiftId,
-  loadScheduleGridFromStorage,
-  saveScheduleGridToStorage,
+  loadScheduleStore,
+  saveScheduleStore,
   findFirstMatchingEmptySlot,
   listEmptySlotsMatchingFilters,
   listEmptySlots,
   formatDescriptorLine,
+  parseImportedGrid,
+  findDuplicateNameAssignments,
+  formatSlotDescriptor,
 } from "../lib/may2026Schedule";
+import {
+  buildScheduleCsv,
+  buildSchedulePlainText,
+  downloadSchedulePdf,
+  triggerDownloadText,
+} from "../lib/scheduleReport";
 
 type AiPanel = { text: string | null; error: string | null; loading: boolean };
 
@@ -45,24 +55,85 @@ const CALENDAR_ROWS: readonly RoomRow[] = [
   { key: "juniores", label: "JUNIORES", type: "sala", auxiliares: 2 },
 ];
 
-const inputSlotClass =
-  "w-full min-w-0 rounded-md border border-gray-200/90 bg-white px-1.5 py-1 text-xs text-gray-900 placeholder:text-gray-400 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 dark:border-gray-600 dark:bg-gray-900/70 dark:text-white dark:placeholder:text-gray-500";
+const MONTH_LABELS_PT = [
+  "Janeiro",
+  "Fevereiro",
+  "Março",
+  "Abril",
+  "Maio",
+  "Junho",
+  "Julho",
+  "Agosto",
+  "Setembro",
+  "Outubro",
+  "Novembro",
+  "Dezembro",
+] as const;
+
+/** Vaga vazia: foco azul para não confundir com “preenchido” (verde neon). */
+const inputSlotEmptyClass =
+  "w-full min-w-0 rounded-md border border-gray-300/90 bg-white px-1.5 py-1 text-xs text-gray-900 placeholder:text-gray-400 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-400/30 dark:border-gray-600 dark:bg-gray-900/75 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-sky-400 dark:focus:ring-sky-400/35";
+
+/**
+ * Vaga preenchida: borda verde neon grossa + brilho — repetido em TODAS as células
+ * com nome, para leitura visual acumulativa da tabela (claro e escuro).
+ */
+const inputSlotFilledClass =
+  "w-full min-w-0 rounded-md border-[3px] border-lime-500 bg-lime-50/95 px-1.5 py-1 text-xs font-semibold text-gray-900 placeholder:font-normal shadow-[0_0_0_1px_rgba(132,204,22,0.25),0_4px_14px_-2px_rgba(34,197,94,0.35)] focus:border-lime-600 focus:outline-none focus:ring-2 focus:ring-lime-400/50 dark:border-lime-400 dark:bg-lime-950/40 dark:text-lime-50 dark:shadow-[0_0_22px_rgba(190,242,100,0.45),0_0_0_1px_rgba(163,230,53,0.35)] dark:focus:border-lime-300 dark:focus:ring-lime-300/50";
+
+const inputSlotDuplicateClass =
+  "w-full min-w-0 rounded-md border-[3px] border-amber-500 bg-amber-50 px-1.5 py-1 text-xs font-semibold text-amber-950 placeholder:font-normal shadow-[0_0_0_1px_rgba(245,158,11,0.3),0_4px_14px_-2px_rgba(245,158,11,0.35)] focus:border-amber-600 focus:outline-none focus:ring-2 focus:ring-amber-400/50 dark:border-amber-400 dark:bg-amber-950/50 dark:text-amber-50 dark:shadow-[0_0_22px_rgba(251,191,36,0.4)] dark:focus:border-amber-300 dark:focus:ring-amber-400/45";
+
+function slotInputClass(
+  value: string,
+  cellKey: string,
+  duplicateKeys: Set<string>
+): string {
+  const t = value.trim();
+  const dup = duplicateKeys.has(cellKey);
+  if (dup) {
+    return inputSlotDuplicateClass;
+  }
+  if (t.length > 0) {
+    return inputSlotFilledClass;
+  }
+  return inputSlotEmptyClass;
+}
 
 function ShiftScheduleTable(props: {
   shiftId: CalendarShiftId;
   shiftLabel: string;
   headerClass: string;
+  sundays: readonly Date[];
   values: Record<string, string>;
+  duplicateKeys: Set<string>;
   onCellChange: (key: string, value: string) => void;
 }) {
-  const { shiftId, shiftLabel, headerClass, values, onCellChange } = props;
+  const {
+    shiftId,
+    shiftLabel,
+    headerClass,
+    sundays,
+    values,
+    duplicateKeys,
+    onCellChange,
+  } = props;
+
+  if (sundays.length === 0) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-400">
+        Este mês não tem domingos na grade (caso raro). Escolha outro mês/ano.
+      </div>
+    );
+  }
+
   return (
     <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm dark:border-gray-700">
       <table className="w-full min-w-[640px] border-collapse text-left text-sm">
         <thead>
           <tr>
             <th
-              colSpan={MAY_2026_SUNDAYS.length + 1}
+              colSpan={sundays.length + 1}
               className={`px-3 py-2 text-center text-xs font-bold uppercase tracking-wide text-white ${headerClass}`}
             >
               {shiftLabel}
@@ -72,7 +143,7 @@ function ShiftScheduleTable(props: {
             <th className="w-36 border-r border-gray-200 px-2 py-2 text-xs font-semibold text-gray-700 dark:border-gray-600 dark:text-gray-200">
               Função / Sala
             </th>
-            {MAY_2026_SUNDAYS.map((d) => (
+            {sundays.map((d) => (
               <th
                 key={dateKeyLocal(d)}
                 className="min-w-[7.5rem] border-r border-gray-200 px-2 py-2 text-center text-xs font-semibold text-gray-700 last:border-r-0 dark:border-gray-600 dark:text-gray-200"
@@ -91,7 +162,7 @@ function ShiftScheduleTable(props: {
               <td className="border-r border-gray-200 bg-gray-50/80 px-2 py-2 align-top text-xs font-semibold uppercase text-gray-800 dark:border-gray-600 dark:bg-gray-800/40 dark:text-gray-100">
                 {row.label}
               </td>
-              {MAY_2026_SUNDAYS.map((d) => {
+              {sundays.map((d) => {
                 const dk = dateKeyLocal(d);
                 return (
                   <td
@@ -119,7 +190,13 @@ function ShiftScheduleTable(props: {
                           placeholder="Nome"
                           autoComplete="off"
                           aria-label={`${shiftLabel} ${row.label} ${formatDateBr(d)} facilitador`}
-                          className={inputSlotClass}
+                          className={slotInputClass(
+                            values[
+                              scheduleCellKey(shiftId, dk, row.key, "fac")
+                            ] ?? "",
+                            scheduleCellKey(shiftId, dk, row.key, "fac"),
+                            duplicateKeys
+                          )}
                         />
                       </div>
                     ) : (
@@ -144,7 +221,13 @@ function ShiftScheduleTable(props: {
                             placeholder="Nome"
                             autoComplete="off"
                             aria-label={`${shiftLabel} ${row.label} ${formatDateBr(d)} titular`}
-                            className={`mt-0.5 ${inputSlotClass}`}
+                            className={`mt-0.5 ${slotInputClass(
+                              values[
+                                scheduleCellKey(shiftId, dk, row.key, "tit")
+                              ] ?? "",
+                              scheduleCellKey(shiftId, dk, row.key, "tit"),
+                              duplicateKeys
+                            )}`}
                           />
                         </div>
                         {Array.from({ length: row.auxiliares }, (_, i) => {
@@ -167,7 +250,11 @@ function ShiftScheduleTable(props: {
                                 placeholder="Nome"
                                 autoComplete="off"
                                 aria-label={`${shiftLabel} ${row.label} ${formatDateBr(d)} auxiliar ${i + 1}`}
-                                className={`mt-0.5 ${inputSlotClass}`}
+                                className={`mt-0.5 ${slotInputClass(
+                                  values[k] ?? "",
+                                  k,
+                                  duplicateKeys
+                                )}`}
                               />
                             </div>
                           );
@@ -233,6 +320,7 @@ async function postGemini(
 }
 
 export function VolunteerScheduler() {
+  const initialStore = useMemo(() => loadScheduleStore(), []);
   const [name, setName] = useState("");
   const [days, setDays] = useState<Set<DayId>>(new Set());
   const [shifts, setShifts] = useState<Set<ShiftId>>(new Set());
@@ -243,9 +331,18 @@ export function VolunteerScheduler() {
   const [aiSummary, setAiSummary] = useState<AiPanel>(idleAi);
   const [aiNoMatch, setAiNoMatch] = useState<AiPanel>(idleAi);
   const [aiConfirm, setAiConfirm] = useState<AiPanel>(idleAi);
-  const [scheduleGrid, setScheduleGrid] = useState<Record<string, string>>(
-    loadScheduleGridFromStorage
-  );
+  const [aiDuplicates, setAiDuplicates] = useState<AiPanel>(idleAi);
+
+  const [scheduleYear, setScheduleYear] = useState(initialStore.year);
+  const [scheduleMonth, setScheduleMonth] = useState(initialStore.month);
+  const [allGrids, setAllGrids] = useState<
+    Record<string, Record<string, string>>
+  >(() => ({ ...initialStore.grids }));
+  const [undoStack, setUndoStack] = useState<Record<string, string>[]>([]);
+  const allGridsRef = useRef(allGrids);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const duplicateAiSigRef = useRef("");
+
   const [placementSuccess, setPlacementSuccess] = useState<string | null>(null);
   const [placementVacancies, setPlacementVacancies] = useState<{
     title: string;
@@ -253,8 +350,180 @@ export function VolunteerScheduler() {
   } | null>(null);
 
   useEffect(() => {
-    saveScheduleGridToStorage(scheduleGrid);
-  }, [scheduleGrid]);
+    allGridsRef.current = allGrids;
+  }, [allGrids]);
+
+  const periodKeyStr = useMemo(
+    () => periodKey(scheduleYear, scheduleMonth),
+    [scheduleYear, scheduleMonth]
+  );
+
+  const sundays = useMemo(
+    () => sundaysInMonth(scheduleYear, scheduleMonth - 1),
+    [scheduleYear, scheduleMonth]
+  );
+
+  const scheduleGrid = allGrids[periodKeyStr] ?? {};
+
+  const duplicateGroups = useMemo(
+    () => findDuplicateNameAssignments(scheduleGrid),
+    [scheduleGrid]
+  );
+
+  const duplicateKeys = useMemo(
+    () => new Set(duplicateGroups.flatMap((d) => d.cellKeys)),
+    [duplicateGroups]
+  );
+
+  const duplicateSignature = useMemo(
+    () =>
+      duplicateGroups
+        .map(
+          (d) =>
+            [...d.cellKeys].sort().join(",") + "→" + d.displayName.toLowerCase()
+        )
+        .sort()
+        .join("|"),
+    [duplicateGroups]
+  );
+
+  useEffect(() => {
+    saveScheduleStore({
+      version: 2,
+      year: scheduleYear,
+      month: scheduleMonth,
+      grids: allGrids,
+    });
+  }, [scheduleYear, scheduleMonth, allGrids]);
+
+  useEffect(() => {
+    setUndoStack([]);
+    duplicateAiSigRef.current = "";
+    setAiDuplicates(idleAi);
+  }, [periodKeyStr]);
+
+  useEffect(() => {
+    if (duplicateGroups.length === 0) {
+      setAiDuplicates(idleAi);
+      duplicateAiSigRef.current = "";
+      return;
+    }
+    if (duplicateAiSigRef.current === duplicateSignature) {
+      return;
+    }
+    const periodLabel = `${MONTH_LABELS_PT[scheduleMonth - 1]} de ${scheduleYear}`;
+    const t = window.setTimeout(() => {
+      duplicateAiSigRef.current = duplicateSignature;
+      const names = duplicateGroups
+        .map((d) => `"${d.displayName}"`)
+        .join(", ");
+      window.alert(
+        `Atenção: há nome(s) repetido(s) na escala (${names}).\n\nAs células com o mesmo nome aparecem destacadas em âmbar. Confira se é intencional.\n\nUma mensagem da IA com opções de vagas livres será carregada abaixo (servidor volunteer-api + Gemini).`
+      );
+      void postGemini(setAiDuplicates, {
+        kind: "schedule_duplicates",
+        volunteerName: "Coordenação de escala",
+        periodLabel,
+        duplicates: duplicateGroups.map((d) => ({
+          name: d.displayName,
+          placements: d.cellKeys.map((k) => formatSlotDescriptor(k)),
+        })),
+        emptySlotLabels: listEmptySlots(scheduleGrid, sundays)
+          .slice(0, 45)
+          .map((s) => formatDescriptorLine(s)),
+      });
+    }, 450);
+    return () => window.clearTimeout(t);
+  }, [
+    duplicateSignature,
+    duplicateGroups,
+    scheduleGrid,
+    sundays,
+    scheduleMonth,
+    scheduleYear,
+  ]);
+
+  function pushUndoSnapshot() {
+    const snap = structuredClone(
+      allGridsRef.current[periodKeyStr] ?? {}
+    ) as Record<string, string>;
+    setUndoStack((stack) => [...stack.slice(-49), snap]);
+  }
+
+  /** Desfazer cobre encaixar automático, importação e limpar — edição direta na célula não empilha. */
+  function patchCurrentGridWithUndo(
+    updater: (g: Record<string, string>) => Record<string, string>
+  ) {
+    pushUndoSnapshot();
+    setAllGrids((prev) => {
+      const cur = prev[periodKeyStr] ?? {};
+      return { ...prev, [periodKeyStr]: updater(cur) };
+    });
+  }
+
+  function setCellValue(key: string, value: string) {
+    setAllGrids((prev) => ({
+      ...prev,
+      [periodKeyStr]: { ...(prev[periodKeyStr] ?? {}), [key]: value },
+    }));
+  }
+
+  function handleUndo() {
+    setUndoStack((stack) => {
+      if (stack.length === 0) return stack;
+      const prev = structuredClone(stack[stack.length - 1]) as Record<
+        string,
+        string
+      >;
+      setAllGrids((all) => ({ ...all, [periodKeyStr]: prev }));
+      return stack.slice(0, -1);
+    });
+  }
+
+  function handleLimparEscala() {
+    if (
+      !window.confirm(
+        `Limpar todos os nomes da escala de ${MONTH_LABELS_PT[scheduleMonth - 1]} de ${scheduleYear}? Você pode desfazer com "Desfazer".`
+      )
+    ) {
+      return;
+    }
+    patchCurrentGridWithUndo(() => ({}));
+    setPlacementSuccess(null);
+    setPlacementVacancies(null);
+  }
+
+  function handleImportJsonFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = String(reader.result ?? "");
+        const data = JSON.parse(text) as unknown;
+        const grid = parseImportedGrid(data);
+        if (!grid || Object.keys(grid).length === 0) {
+          window.alert(
+            "JSON inválido ou sem campo \"grid\". Use um arquivo exportado por esta página ou o mesmo formato."
+          );
+          return;
+        }
+        pushUndoSnapshot();
+        setAllGrids((prev) => ({
+          ...prev,
+          [periodKeyStr]: grid,
+        }));
+        setPlacementSuccess(
+          `Importação concluída para ${MONTH_LABELS_PT[scheduleMonth - 1]}/${scheduleYear}.`
+        );
+        setPlacementVacancies(null);
+      } catch {
+        window.alert("Não foi possível ler o JSON.");
+      }
+    };
+    reader.readAsText(file, "UTF-8");
+  }
 
   const constraints: VolunteerConstraints = useMemo(
     () => ({
@@ -298,7 +567,10 @@ export function VolunteerScheduler() {
   function exportScheduleJson() {
     const payload = {
       exportedAt: new Date().toISOString(),
-      month: "2026-05",
+      year: scheduleYear,
+      month: scheduleMonth,
+      monthLabel: MONTH_LABELS_PT[scheduleMonth - 1],
+      periodKey: periodKeyStr,
       sundaysDomingo: true,
       grid: scheduleGrid,
     };
@@ -308,9 +580,67 @@ export function VolunteerScheduler() {
     const a = document.createElement("a");
     const url = URL.createObjectURL(blob);
     a.href = url;
-    a.download = "escala-voluntarios-maio-2026.json";
+    a.download = `escala-voluntarios-${scheduleYear}-${String(scheduleMonth).padStart(2, "0")}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  function reportBasename() {
+    return `escala-voluntarios-${scheduleYear}-${String(scheduleMonth).padStart(2, "0")}`;
+  }
+
+  function handleExportPdf() {
+    downloadSchedulePdf(
+      scheduleGrid,
+      sundays,
+      scheduleYear,
+      scheduleMonth,
+      `${reportBasename()}.pdf`
+    );
+  }
+
+  function handleExportCsv() {
+    const csv = buildScheduleCsv(
+      scheduleGrid,
+      sundays,
+      scheduleYear,
+      scheduleMonth
+    );
+    triggerDownloadText(
+      "\uFEFF" + csv,
+      `${reportBasename()}.csv`,
+      "text/csv;charset=utf-8"
+    );
+  }
+
+  function handleExportTxt() {
+    const txt = buildSchedulePlainText(
+      scheduleGrid,
+      sundays,
+      scheduleYear,
+      scheduleMonth
+    );
+    triggerDownloadText(txt, `${reportBasename()}.txt`, "text/plain;charset=utf-8");
+  }
+
+  function requestDuplicateAiAgain() {
+    if (duplicateGroups.length === 0) {
+      window.alert("Não há nomes repetidos na escala neste período.");
+      return;
+    }
+    const periodLabel = `${MONTH_LABELS_PT[scheduleMonth - 1]} de ${scheduleYear}`;
+    void postGemini(setAiDuplicates, {
+      kind: "schedule_duplicates",
+      volunteerName: "Coordenação de escala",
+      periodLabel,
+      duplicates: duplicateGroups.map((d) => ({
+        name: d.displayName,
+        placements: d.cellKeys.map((k) => formatSlotDescriptor(k)),
+      })),
+      emptySlotLabels: listEmptySlots(scheduleGrid, sundays)
+        .slice(0, 45)
+        .map((s) => formatDescriptorLine(s)),
+    });
   }
 
   function handleEncaixarNaTabela() {
@@ -323,7 +653,7 @@ export function VolunteerScheduler() {
     }
     if (!days.has("dom")) {
       window.alert(
-        'A tabela de maio de 2026 usa apenas domingos. Marque "Domingo" em Dias para encaixar automaticamente.'
+        'A tabela usa apenas os domingos do mês selecionado. Marque "Domingo" em Dias para encaixar automaticamente.'
       );
       return;
     }
@@ -350,11 +680,12 @@ export function VolunteerScheduler() {
 
     const found = findFirstMatchingEmptySlot(
       scheduleGrid,
-      placementConstraints
+      placementConstraints,
+      sundays
     );
 
     if (found) {
-      setScheduleGrid((prev) => ({ ...prev, [found.key]: trimmed }));
+      patchCurrentGridWithUndo((g) => ({ ...g, [found.key]: trimmed }));
       setPlacementSuccess(
         `${trimmed} foi encaixado(a) em: ${found.label}. A escala acumula cada nome e já foi salva neste navegador.`
       );
@@ -363,12 +694,13 @@ export function VolunteerScheduler() {
 
     const matchingFree = listEmptySlotsMatchingFilters(
       scheduleGrid,
-      placementConstraints
+      placementConstraints,
+      sundays
     );
     const lines =
       matchingFree.length > 0
         ? matchingFree.map(formatDescriptorLine)
-        : listEmptySlots(scheduleGrid).map(formatDescriptorLine);
+        : listEmptySlots(scheduleGrid, sundays).map(formatDescriptorLine);
 
     const title =
       matchingFree.length > 0
@@ -496,11 +828,11 @@ export function VolunteerScheduler() {
                 Dias
               </legend>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Para encaixar na tabela de maio/2026, inclua{" "}
+                Para encaixar na tabela do mês escolhido abaixo, inclua{" "}
                 <span className="font-medium text-gray-700 dark:text-gray-300">
                   Domingo
                 </span>{" "}
-                (só há colunas para os domingos do mês).
+                (as colunas são só os domingos daquele mês).
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {DAYS.map((d) => {
@@ -624,7 +956,7 @@ export function VolunteerScheduler() {
                 disabled={!canEncaixarNaTabela}
                 title={
                   !days.has("dom")
-                    ? 'Marque "Domingo" para usar a escala de maio/2026'
+                    ? 'Marque "Domingo" para encaixar na escala mensal'
                     : undefined
                 }
                 className="inline-flex items-center justify-center rounded-xl border-2 border-emerald-600/50 bg-emerald-50 px-5 py-3 text-sm font-semibold text-emerald-900 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:text-emerald-100 dark:hover:bg-emerald-950/60"
@@ -647,7 +979,12 @@ export function VolunteerScheduler() {
               </strong>{" "}
               coloca o nome na primeira vaga livre que combina com turno, função e
               salas marcados (na ordem dos domingos). Cada encaixe soma ao que já
-              está preenchido e fica salvo no navegador.
+              está preenchido e fica salvo no navegador. Use{" "}
+              <strong className="font-medium text-gray-700 dark:text-gray-300">
+                Desfazer
+              </strong>{" "}
+              para voltar o último encaixe, importação ou limpeza (edição direta na
+              célula não entra na pilha).
             </p>
           </div>
         </form>
@@ -661,9 +998,52 @@ export function VolunteerScheduler() {
             id="calendario-vagas-titulo"
             className="text-center text-lg font-semibold text-gray-900 dark:text-white"
           >
-            Calendário de vagas — domingos de maio de 2026
+            Calendário de vagas — domingos de{" "}
+            {MONTH_LABELS_PT[scheduleMonth - 1]} de {scheduleYear}
           </h2>
-          <p className="mx-auto mt-2 max-w-2xl text-center text-sm text-gray-600 dark:text-gray-400">
+          <div className="mx-auto mt-4 flex max-w-xl flex-col gap-3 sm:flex-row sm:items-end sm:justify-center">
+            <div className="flex flex-1 flex-col gap-1">
+              <label
+                htmlFor="schedule-month"
+                className="text-xs font-medium text-gray-600 dark:text-gray-400"
+              >
+                Mês
+              </label>
+              <select
+                id="schedule-month"
+                value={scheduleMonth}
+                onChange={(e) => setScheduleMonth(Number(e.target.value))}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-white"
+              >
+                {MONTH_LABELS_PT.map((label, i) => (
+                  <option key={label} value={i + 1}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-1 flex-col gap-1">
+              <label
+                htmlFor="schedule-year"
+                className="text-xs font-medium text-gray-600 dark:text-gray-400"
+              >
+                Ano
+              </label>
+              <select
+                id="schedule-year"
+                value={scheduleYear}
+                onChange={(e) => setScheduleYear(Number(e.target.value))}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-white"
+              >
+                {Array.from({ length: 12 }, (_, i) => 2024 + i).map((y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <p className="mx-auto mt-3 max-w-2xl text-center text-sm text-gray-600 dark:text-gray-400">
             Preencha os nomes conforme os critérios de cada função. Por turno
             (manhã, tarde e noite):{" "}
             <strong className="font-medium text-gray-800 dark:text-gray-200">
@@ -677,20 +1057,78 @@ export function VolunteerScheduler() {
             <strong className="font-medium text-gray-800 dark:text-gray-200">
               Auxiliares
             </strong>{" "}
-            — 3 em Kids e Super Kids, 2 em Juniores.
+            — 3 em Kids e Super Kids, 2 em Juniores. Cada mês/ano tem sua escala
+            guardada neste aparelho.
           </p>
-          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
-            <button
-              type="button"
-              onClick={exportScheduleJson}
-              className="inline-flex items-center rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 shadow-sm transition hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-            >
-              Exportar JSON
-            </button>
-            <span className="text-xs text-gray-500 dark:text-gray-400">
-              Inclui todos os nomes da grade + data da exportação. A escala também
-              permanece salva neste navegador (localStorage).
-            </span>
+          <div className="mt-4 flex flex-col items-stretch gap-3 sm:items-center">
+            <div className="flex flex-wrap justify-center gap-2">
+              <button
+                type="button"
+                onClick={handleUndo}
+                disabled={undoStack.length === 0}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 shadow-sm transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+              >
+                Desfazer
+              </button>
+              <button
+                type="button"
+                onClick={handleLimparEscala}
+                className="rounded-lg border border-red-300 bg-red-50 px-4 py-2 text-sm font-medium text-red-900 transition hover:bg-red-100 dark:border-red-800 dark:bg-red-950/50 dark:text-red-100 dark:hover:bg-red-950/80"
+              >
+                Limpar escala
+              </button>
+              <button
+                type="button"
+                onClick={() => importInputRef.current?.click()}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 shadow-sm transition hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+              >
+                Importar JSON
+              </button>
+              <input
+                ref={importInputRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={handleImportJsonFile}
+              />
+              <button
+                type="button"
+                onClick={exportScheduleJson}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 shadow-sm transition hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+              >
+                Exportar JSON
+              </button>
+            </div>
+            <p className="text-center text-xs font-medium text-gray-700 dark:text-gray-300">
+              Relatório para enviar
+            </p>
+            <div className="flex flex-wrap justify-center gap-2">
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+              >
+                PDF
+              </button>
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                className="rounded-lg border border-emerald-600/50 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-900 transition hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:text-emerald-100"
+              >
+                CSV (Excel)
+              </button>
+              <button
+                type="button"
+                onClick={handleExportTxt}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 shadow-sm transition hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+              >
+                Texto (.txt)
+              </button>
+            </div>
+            <p className="text-center text-xs text-gray-500 dark:text-gray-400">
+              JSON inclui metadados e a grade; PDF/CSV/TXT refletem o mês e ano
+              selecionados. Tudo permanece em localStorage por período.
+            </p>
           </div>
           {placementSuccess && (
             <div
@@ -718,33 +1156,83 @@ export function VolunteerScheduler() {
               </ul>
             </div>
           )}
+          <p className="mx-auto mt-4 max-w-2xl text-center text-xs text-gray-600 dark:text-gray-400">
+            <span className="mr-2 inline-block rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 dark:border-emerald-700 dark:bg-emerald-950/40">
+              Verde
+            </span>
+            toda célula com nome: mesma borda verde neon (visão acumulativa) ·{" "}
+            <span className="mr-2 inline-block rounded border border-amber-400 bg-amber-50 px-2 py-0.5 dark:border-amber-600 dark:bg-amber-950/40">
+              Âmbar
+            </span>
+            mesmo nome em mais de uma vaga (duplicado)
+          </p>
+          {duplicateGroups.length > 0 && (
+            <div
+              className="mx-auto mt-4 max-w-3xl rounded-xl border border-violet-200 bg-violet-50/90 p-4 dark:border-violet-900/50 dark:bg-violet-950/25"
+              role="region"
+              aria-label="Orientação da IA sobre nomes repetidos"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-violet-950 dark:text-violet-100">
+                  IA — nomes repetidos e opções de vagas
+                </h3>
+                <button
+                  type="button"
+                  onClick={requestDuplicateAiAgain}
+                  disabled={aiDuplicates.loading}
+                  className="rounded-lg border border-violet-500/40 bg-white px-3 py-1.5 text-xs font-medium text-violet-900 transition hover:bg-violet-100 disabled:opacity-50 dark:border-violet-500/30 dark:bg-violet-950/50 dark:text-violet-100 dark:hover:bg-violet-900/40"
+                >
+                  {aiDuplicates.loading ? "Gerando…" : "Atualizar orientação"}
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-violet-800/90 dark:text-violet-200/90">
+                A mensagem abaixo usa Gemini no backend e lista vagas livres
+                reais para remanejamento.
+              </p>
+              {aiDuplicates.error && (
+                <p className="mt-2 text-sm text-red-600 dark:text-red-400" role="alert">
+                  {aiDuplicates.error}
+                </p>
+              )}
+              {aiDuplicates.loading && (
+                <p className="mt-3 text-sm text-violet-800 dark:text-violet-200">
+                  Gerando orientação com a IA…
+                </p>
+              )}
+              {aiDuplicates.text && (
+                <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-violet-950 dark:text-violet-100">
+                  {aiDuplicates.text}
+                </p>
+              )}
+            </div>
+          )}
           <div className="mt-6 space-y-8">
             <ShiftScheduleTable
               shiftId="manha"
               shiftLabel="MANHÃ"
               headerClass="bg-amber-600 dark:bg-amber-700"
+              sundays={sundays}
               values={scheduleGrid}
-              onCellChange={(key, value) =>
-                setScheduleGrid((prev) => ({ ...prev, [key]: value }))
-              }
+              duplicateKeys={duplicateKeys}
+              onCellChange={setCellValue}
             />
             <ShiftScheduleTable
               shiftId="tarde"
               shiftLabel="TARDE"
               headerClass="bg-blue-600 dark:bg-blue-700"
+              sundays={sundays}
               values={scheduleGrid}
-              onCellChange={(key, value) =>
-                setScheduleGrid((prev) => ({ ...prev, [key]: value }))
-              }
+              duplicateKeys={duplicateKeys}
+              onCellChange={setCellValue}
             />
             <ShiftScheduleTable
               shiftId="noite"
               shiftLabel="NOITE"
               headerClass="bg-violet-900 dark:bg-violet-950"
+              sundays={sundays}
               values={scheduleGrid}
-              onCellChange={(key, value) =>
-                setScheduleGrid((prev) => ({ ...prev, [key]: value }))
-              }
+              duplicateKeys={duplicateKeys}
+              onCellChange={setCellValue}
             />
           </div>
         </section>
