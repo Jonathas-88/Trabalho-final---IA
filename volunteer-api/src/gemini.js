@@ -33,7 +33,21 @@ export async function callGemini(prompt) {
 
   if (!res.ok) {
     const errBody = await res.text();
-    const baseMessage = `Gemini HTTP ${res.status}: ${errBody.slice(0, 200)}`;
+    let detail = errBody.slice(0, 400);
+    try {
+      const j = JSON.parse(errBody);
+      const apiErr = j?.error;
+      if (apiErr && typeof apiErr === "object") {
+        const m = apiErr.message;
+        const c = apiErr.code;
+        if (typeof m === "string" && m.trim()) {
+          detail = c ? `${c}: ${m}` : m;
+        }
+      }
+    } catch {
+      /* manter detail como texto bruto */
+    }
+    const baseMessage = `Gemini HTTP ${res.status}: ${detail}`;
     let message = baseMessage;
     if (res.status === 429) {
       message =

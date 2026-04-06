@@ -6,6 +6,7 @@ import {
   buildNoMatchPrompt,
   buildSlotConfirmPrompt,
   buildScheduleDuplicatesPrompt,
+  buildScheduleAssistantPrompt,
 } from "./prompt.js";
 import { callGemini } from "./gemini.js";
 
@@ -36,7 +37,8 @@ function resolveKind(body) {
     raw === "no_match_hint" ||
     raw === "slot_confirm" ||
     raw === "matched_summary" ||
-    raw === "schedule_duplicates"
+    raw === "schedule_duplicates" ||
+    raw === "schedule_assistant"
   ) {
     return raw;
   }
@@ -78,14 +80,41 @@ app.post("/api/gemini-suggest", async (req, res) => {
   const shifts = Array.isArray(body.shifts) ? body.shifts : [];
   const roles = Array.isArray(body.roles) ? body.roles : [];
 
-  if (kind !== "schedule_duplicates" && !volunteerName) {
+  if (
+    kind !== "schedule_duplicates" &&
+    kind !== "schedule_assistant" &&
+    !volunteerName
+  ) {
     res.status(400).json({ error: "volunteerName é obrigatório" });
     return;
   }
 
   /** @type {string} */
   let prompt;
-  if (kind === "schedule_duplicates") {
+  if (kind === "schedule_assistant") {
+    const userMessage =
+      typeof body.userMessage === "string" ? body.userMessage.trim() : "";
+    if (!userMessage) {
+      res.status(400).json({ error: "userMessage é obrigatório" });
+      return;
+    }
+    const periodLabel =
+      typeof body.periodLabel === "string" && body.periodLabel.trim()
+        ? body.periodLabel.trim()
+        : "período atual";
+    const scheduleContext =
+      typeof body.scheduleContext === "string" ? body.scheduleContext : "";
+    const who =
+      typeof body.volunteerName === "string" && body.volunteerName.trim()
+        ? body.volunteerName.trim()
+        : "Coordenador(a)";
+    prompt = buildScheduleAssistantPrompt(
+      who,
+      periodLabel,
+      scheduleContext,
+      userMessage
+    );
+  } else if (kind === "schedule_duplicates") {
     const duplicates = Array.isArray(body.duplicates) ? body.duplicates : [];
     if (duplicates.length === 0) {
       res.status(400).json({ error: "duplicates não pode ser vazio neste modo" });
@@ -158,13 +187,19 @@ app.post("/api/gemini-suggest", async (req, res) => {
   } catch (e) {
     const message = e instanceof Error ? e.message : "Erro ao chamar Gemini";
     const typed = /** @type {Error & { status?: number }} */ (e);
-    const status =
-      typed.status ??
-      (message.includes("GEMINI_API_KEY")
-        ? 503
-        : message.includes("HTTP 429")
-          ? 429
-          : 502);
+    const upstream = typed.status;
+    let status = 502;
+    if (message.includes("GEMINI_API_KEY")) {
+      status = 503;
+    } else if (message.includes("HTTP 429") || upstream === 429) {
+      status = 429;
+    } else if (
+      typeof upstream === "number" &&
+      upstream >= 400 &&
+      upstream < 500
+    ) {
+      status = upstream;
+    }
     res.status(status).json({ error: message });
   }
 });
@@ -172,6 +207,6 @@ app.post("/api/gemini-suggest", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`volunteer-api em http://localhost:${PORT}`);
   console.log(
-    `  POST /api/gemini-suggest (kind: matched_summary | no_match_hint | slot_confirm | schedule_duplicates)`
+    `  POST /api/gemini-suggest (kind: matched_summary | no_match_hint | slot_confirm | schedule_duplicates | schedule_assistant)`
   );
 });

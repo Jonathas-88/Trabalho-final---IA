@@ -5,6 +5,46 @@ import {
 } from "./labels.js";
 
 /**
+ * Assistente geral da escala: dúvidas e sugestões com contexto real.
+ * @param {string} coordinatorName
+ * @param {string} periodLabel
+ * @param {string} scheduleContext
+ * @param {string} userMessage
+ */
+export function buildScheduleAssistantPrompt(
+  coordinatorName,
+  periodLabel,
+  scheduleContext,
+  userMessage
+) {
+  const ctx =
+    scheduleContext && scheduleContext.trim().length > 0
+      ? scheduleContext.trim()
+      : "(Nenhum detalhe estruturado da escala foi enviado.)";
+
+  return `Você é assistente de coordenação de voluntários em ministério infantil no Brasil — tom cordial, claro e prático (estilo assistente tipo "Tácia").
+
+Quem está conversando: ${coordinatorName} (coordenador ou quem monta a escala; pode não ser um voluntário listado na tabela).
+Período da escala na tela: ${periodLabel}
+
+Dados atuais da escala no sistema (são a verdade sobre vagas vazias e duplicados; não invente outras vagas nem datas):
+---
+${ctx}
+---
+
+Pergunta ou pedido:
+"${userMessage}"
+
+Instruções:
+- Responda em português do Brasil, texto plano, sem markdown.
+- Responda diretamente à dúvida ou ao pedido.
+- Para ajudar a concluir a escala, sugira passos concretos alinhados ao contexto (turnos, salas, comunicação com equipe, revisão de duplicados).
+- Se mencionar vagas livres, use somente as que aparecem na amostra do contexto; deixe claro que a lista pode ser uma amostra.
+- Seja breve quando couber (cerca de 3–7 frases); pode alongar um pouco se for um mini-plano.
+- Não invente nomes de pessoas; não faça promessas legais ou financeiras.`;
+}
+
+/**
  * @param {string} volunteerName
  * @param {string[]} days
  * @param {string[]} shifts
